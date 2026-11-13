@@ -127,9 +127,10 @@
       }
 
       .footprint {
-        width: 25px;
-        height: 38px;
+        width: 15px;
+        height: 24px;
         display: block;
+        opacity: 0.85;
         transform-origin: center;
       }
 
@@ -176,7 +177,7 @@
         <button id="start">INIZIA IL PERCORSO</button>
         <button id="pause" class="secondary" disabled>METTI IN PAUSA</button>
         <button id="finish" class="secondary" disabled>TERMINA</button>
-        <button id="export" class="secondary">ESPORTA TRACCIA</button>
+        <!-- <button id="export" class="secondary">ESPORTA TRACCIA</button> -->
       </div>
 
       <p class="note">
@@ -210,6 +211,7 @@
       let footprints = [];
       let markers = [];
       let wakeLock = null;
+      let pendingPositions = [];
 
       const $ = (id) => document.getElementById(id);
 
@@ -259,8 +261,8 @@
 
         return L.divIcon({
           className: "",
-          iconSize: [25, 38],
-          iconAnchor: [12, 19],
+          iconSize: [15, 24],
+          iconAnchor: [7, 12],
           html: `
       <div class="footprint"
        style="transform:rotate(${angle}deg) scaleX(${mirror})">
@@ -388,39 +390,89 @@
           lng: position.coords.longitude,
         };
 
-        if (position.coords.accuracy > MAX_ACCURACY) {
-          $("status").textContent =
-            "Segnale GPS impreciso. Attendo una posizione migliore...";
-          return;
-        }
+        const accuracy = position.coords.accuracy;
+        const gpsSpeed = position.coords.speed;
 
-        $("status").textContent = "Il cammino è in corso...";
+        // Scarta posizioni troppo imprecise.
+        if (accuracy > 25) return;
 
         if (!lastPosition) {
           lastPosition = p;
           lastFootPosition = p;
 
           map.setView([p.lat, p.lng], 18);
-
           addFootprint(p, 0);
           saveData();
           return;
         }
 
-        const distance = distanceBetween(lastPosition, p);
+        const displacement = distanceBetween(lastPosition, p);
 
-        // Filtro contro oscillazioni GPS.
-        if (distance < 1.5) return;
+        // Ignora piccoli spostamenti GPS.
+        if (displacement < 3) return;
 
-        if (distance > 100) {
-          $("status").textContent =
-            "Spostamento anomalo rilevato. Verifica il GPS.";
+        // Ignora salti GPS anomali.
+        if (displacement > 40) {
+          pendingPositions = [];
           return;
         }
 
-        const direction = bearing(lastPosition, p);
+        pendingPositions.push({
+          position: p,
+          accuracy,
+          speed: gpsSpeed,
+          time: position.timestamp,
+        });
 
-        totalDistance += distance;
+        // Conserviamo solo le ultime 4 rilevazioni.
+        if (pendingPositions.length > 4) {
+          pendingPositions.shift();
+        }
+
+        if (pendingPositions.length < 3) return;
+
+        const first = pendingPositions[0].position;
+        const last = pendingPositions[pendingPositions.length - 1].position;
+
+        const totalMovement = distanceBetween(first, last);
+        const direction = bearing(first, last);
+
+        // Verifica che gli spostamenti abbiano
+        // una direzione sufficientemente coerente.
+        const directions = [];
+
+        for (let i = 1; i < pendingPositions.length; i++) {
+          directions.push(
+            bearing(
+              pendingPositions[i - 1].position,
+              pendingPositions[i].position,
+            ),
+          );
+        }
+
+        function angleDifference(a, b) {
+          return Math.abs(((a - b + 540) % 360) - 180);
+        }
+
+        const coherent = directions.every(
+          (d) => angleDifference(d, direction) < 40,
+        );
+
+        const requiredDistance = Math.max(5, accuracy * 0.8);
+
+        // Richiede movimento reale e coerente.
+        if (!coherent || totalMovement < 3) return;
+
+        if (
+          displacement < requiredDistance &&
+          !(gpsSpeed !== null && gpsSpeed > 0.8)
+        ) {
+          return;
+        }
+
+        const traveled = distanceBetween(lastPosition, p);
+
+        totalDistance += traveled;
 
         if (distanceBetween(lastFootPosition, p) >= STEP_DISTANCE) {
           addFootprint(p, direction);
@@ -428,6 +480,7 @@
         }
 
         lastPosition = p;
+        pendingPositions = [];
 
         updateDisplay();
         saveData();
@@ -548,7 +601,7 @@
 
       $("finish").addEventListener("click", finishTracking);
 
-      $("export").addEventListener("click", exportTrack);
+      //   $("export").addEventListener("click", exportTrack);
 
       restoreData();
     </script>
